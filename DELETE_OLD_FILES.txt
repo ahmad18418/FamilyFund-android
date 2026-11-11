@@ -1,0 +1,7 @@
+اگر بیلد دوباره Duplicate resources داد، در گیت‌هاب این فایل‌ها را دستی حذف کنید:
+app/src/main/res/drawable/ic_launcher_foreground.xml
+app/src/main/res/drawable/ic_launcher_foreground.png
+app/src/main/res/drawable/ic_launcher_background.xml
+
+فقط باید بماند:
+app/src/main/res/drawable/ic_app_icon.png

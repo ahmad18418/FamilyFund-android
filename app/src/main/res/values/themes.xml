@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.FamilyFund" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#2f855a</item>
+        <item name="colorPrimaryVariant">#276749</item>
+        <item name="colorOnPrimary">@android:color/white</item>
+        <item name="android:statusBarColor">#276749</item>
+        <item name="android:navigationBarColor">#1a202c</item>
+    </style>
+</resources>

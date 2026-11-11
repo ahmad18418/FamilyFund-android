@@ -1,0 +1,57 @@
+apply plugin: 'com.android.application'
+apply plugin: 'kotlin-android'
+
+android {
+    namespace 'com.familyfund.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.familyfund.app"
+        minSdk 24
+        targetSdk 34
+        versionCode 19
+        versionName "1.6.10"
+        buildConfigField "String", "DEFAULT_SERVER_URL", "\"http://130.185.75.146/fund\""
+    }
+
+    signingConfigs {
+        release {
+            storeFile file("../keystore/familyfund.jks")
+            storePassword "familyfund2024"
+            keyAlias "familyfund"
+            keyPassword "familyfund2024"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        debug {
+            signingConfig signingConfigs.release
+            minifyEnabled false
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+    buildFeatures {
+        buildConfig true
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.11.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+    implementation 'androidx.biometric:biometric:1.1.0'
+    implementation 'androidx.webkit:webkit:1.10.0'
+    implementation 'androidx.work:work-runtime-ktx:2.9.0'
+}

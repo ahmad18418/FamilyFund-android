@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">صندوق خانواده</string>
+    <string name="settings">تنظیمات</string>
+    <string name="biometric_title">ورود به صندوق خانواده</string>
+    <string name="biometric_subtitle">اثرانگشت یا تشخیص چهره</string>
+    <string name="biometric_description">برای باز کردن اپ هویت خود را تأیید کنید</string>
+    <string name="biometric_cancel">انصراف</string>
+    <string name="biometric_error">بیومتریک در دسترس نیست</string>
+    <string name="retry">ورود به اپ</string>
+    <string name="open_settings">تنظیمات</string>
+    <string name="server_url">آدرس سرور</string>
+    <string name="save">ذخیره تنظیمات</string>
+    <string name="use_biometric">ورود با اثرانگشت / چهره</string>
+    <string name="change_password">تغییر رمز عبور</string>
+    <string name="loading">در حال بارگذاری…</string>
+</resources>
