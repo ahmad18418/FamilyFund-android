@@ -18,8 +18,15 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Setup Android SDK path
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          if [ -z "$ANDROID_HOME" ]; then
+            echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
+            echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
+          fi
+          sdkmanager --install "platforms;android-34" "build-tools;34.0.0" "platform-tools" || true
+          yes | sdkmanager --licenses || true
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
@@ -36,7 +43,7 @@ jobs:
           bash gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee /tmp/build.log
           CODE=${PIPESTATUS[0]}
           set -e
-          tail -100 /tmp/build.log
+          tail -120 /tmp/build.log
           exit $CODE
 
       - name: Upload APK
