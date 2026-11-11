@@ -18,13 +18,10 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # استفاده از SDK از پیش نصب‌شده روی runner گیت‌هاب (بدون پکیج tools قدیمی)
       - name: Setup Android SDK path
         run: |
-          echo "ANDROID_HOME=$ANDROID_HOME" 
-          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          echo "ANDROID_HOME=$ANDROID_HOME"
           if [ -z "$ANDROID_HOME" ]; then
-            echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
             echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
             echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
           fi
@@ -38,9 +35,6 @@ jobs:
         run: chmod +x gradlew || true
 
       - name: Build signed debug APK
-        env:
-          ANDROID_HOME: ${{ env.ANDROID_HOME }}
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
         run: |
           if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
             curl -fsSL -o gradle/wrapper/gradle-wrapper.jar https://github.com/gradle/gradle/raw/v8.2.0/gradle/wrapper/gradle-wrapper.jar
