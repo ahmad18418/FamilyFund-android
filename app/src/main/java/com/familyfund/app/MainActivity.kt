@@ -3,15 +3,18 @@ package com.familyfund.app
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.graphics.Bitmap
+import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.webkit.CookieManager
+import android.webkit.DownloadListener
+import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
-import android.webkit.DownloadListener
-import android.webkit.JavascriptInterface
 import android.webkit.WebViewClient
 import android.net.Uri
 import android.widget.ProgressBar
@@ -34,9 +37,24 @@ class MainActivity : AppCompatActivity() {
     private lateinit var progress: ProgressBar
     private lateinit var statusText: TextView
     private var unlocked = false
+    private var loginRecoveryTried = false
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private val appVersionLabel: String
         get() = "v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
+
+    private val baseUrl: String
+        get() = prefs.serverUrl.trimEnd('/')
+
+    private val hostRoot: String
+        get() {
+            return try {
+                val u = Uri.parse(if (baseUrl.contains("://")) baseUrl else "http://$baseUrl")
+                "${u.scheme}://${u.host}"
+            } catch (_: Exception) {
+                baseUrl.substringBefore("/fund").ifBlank { baseUrl }
+            }
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -68,47 +86,68 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
-        persistSession()
+        persistSession(force = true)
     }
 
-    override fun onResume() {
-        super.onResume()
+    override fun onStop() {
+        super.onStop()
+        persistSession(force = true)
     }
 
-
-    private fun cookieUrls(): List<String> {
-        val base = prefs.serverUrl.trimEnd('/')
-        val hostOnly = try {
-            val u = Uri.parse(if (base.contains("://")) base else "http://$base")
-            "${u.scheme}://${u.host}"
-        } catch (_: Exception) {
-            base.substringBefore("/fund").ifBlank { base }
-        }
+    private fun cookieTargetUrls(): List<String> {
+        val b = baseUrl
+        val h = hostRoot
         return listOf(
-            base,
-            "$base/",
-            "$base/login",
-            "$base/dashboard",
-            hostOnly,
-            "$hostOnly/",
-            "$hostOnly/fund",
-            "$hostOnly/fund/"
+            h,
+            "$h/",
+            b,
+            "$b/",
+            "$b/login",
+            "$b/dashboard",
+            "$h/fund",
+            "$h/fund/",
+            "$h/fund/login",
+            "$h/fund/dashboard"
         ).distinct()
     }
 
-    private fun persistSession() {
-        try {
-            val cm = CookieManager.getInstance()
-            cm.flush()
-            val parts = linkedSetOf<String>()
-            for (url in cookieUrls()) {
+    /** جمع‌آوری همه کوکی‌های مرتبط با سرور صندوق */
+    private fun collectCookiesFromWebView(): String {
+        val cm = CookieManager.getInstance()
+        val parts = linkedSetOf<String>()
+        for (url in cookieTargetUrls()) {
+            try {
                 val c = cm.getCookie(url)
                 if (!c.isNullOrBlank()) {
                     c.split(";").map { it.trim() }.filter { it.contains("=") }.forEach { parts.add(it) }
                 }
+            } catch (_: Exception) {
             }
-            if (parts.isNotEmpty()) {
-                prefs.savedCookies = parts.joinToString("; ")
+        }
+        return parts.joinToString("; ")
+    }
+
+    private fun hasSessionCookie(raw: String = prefs.savedCookies): Boolean {
+        val s = raw.lowercase()
+        return s.contains("family_fund_session=") ||
+            s.contains("family_fund_remember=") ||
+            s.contains("remember_token=") ||
+            (s.contains("session=") && !s.contains("family_fund_session="))
+    }
+
+    private fun persistSession(force: Boolean = false) {
+        try {
+            val cm = CookieManager.getInstance()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                cm.flush()
+            }
+            val collected = collectCookiesFromWebView()
+            if (collected.isNotBlank()) {
+                // ادغام با قبلی تا کوکی‌های قبلی از دست نروند
+                val merged = linkedSetOf<String>()
+                prefs.savedCookies.split(";").map { it.trim() }.filter { it.contains("=") }.forEach { merged.add(it) }
+                collected.split(";").map { it.trim() }.filter { it.contains("=") }.forEach { merged.add(it) }
+                prefs.savedCookies = merged.joinToString("; ")
             }
             if (this::webView.isInitialized) {
                 val u = webView.url
@@ -124,7 +163,7 @@ class MainActivity : AppCompatActivity() {
         try {
             val cm = CookieManager.getInstance()
             cm.setAcceptCookie(true)
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 cm.removeAllCookies(null)
                 cm.flush()
             } else {
@@ -133,6 +172,7 @@ class MainActivity : AppCompatActivity() {
             }
             prefs.savedCookies = ""
             prefs.lastUrl = ""
+            loginRecoveryTried = false
         } catch (_: Exception) {
         }
     }
@@ -143,49 +183,57 @@ class MainActivity : AppCompatActivity() {
             if (saved.isBlank()) return
             val cm = CookieManager.getInstance()
             cm.setAcceptCookie(true)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                cm.setAcceptThirdPartyCookies(webView, true)
+            }
             val pairs = saved.split(";").map { it.trim() }.filter { it.contains("=") }
-            for (url in cookieUrls()) {
+            for (url in cookieTargetUrls()) {
                 for (pair in pairs) {
-                    // Path را صریح می‌گذاریم تا زیر /fund هم اعمال شود
                     val name = pair.substringBefore("=").trim()
                     val value = pair.substringAfter("=").trim()
                     if (name.isBlank()) continue
+                    // بدون و با Path — سازگاری بیشتر
+                    cm.setCookie(url, "$name=$value")
                     cm.setCookie(url, "$name=$value; Path=/")
                     cm.setCookie(url, "$name=$value; Path=/fund")
                 }
             }
-            cm.flush()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                cm.flush()
+            }
         } catch (_: Exception) {
         }
     }
 
+    private fun targetUrlAfterUnlock(): String {
+        val extra = intent?.getStringExtra(EXTRA_OPEN_URL)
+        if (!extra.isNullOrBlank()) return extra
+        if (hasSessionCookie()) {
+            val last = prefs.lastUrl
+            if (last.isNotBlank() && !last.contains("/login") && !last.contains("/logout")) {
+                return last
+            }
+            return "$baseUrl/dashboard"
+        }
+        return "$baseUrl/login"
+    }
+
     private fun unlockAndLoad() {
         unlocked = true
+        loginRecoveryTried = false
         lockPanel.visibility = View.GONE
         webView.visibility = View.VISIBLE
-        restoreCookies()
-        val extra = intent?.getStringExtra(EXTRA_OPEN_URL)
-        val base = prefs.serverUrl.trimEnd('/')
-        val hasSession = prefs.savedCookies.contains("family_fund_session") ||
-            prefs.savedCookies.contains("family_fund_remember") ||
-            prefs.savedCookies.contains("session")
-        val url = when {
-            !extra.isNullOrBlank() -> extra
-            hasSession && prefs.lastUrl.isNotBlank() && !prefs.lastUrl.contains("/login") -> prefs.lastUrl
-            hasSession -> "$base/dashboard"
-            else -> "$base/login"
-        }
         progress.visibility = View.VISIBLE
-        // بعد از flush کوکی، صفحه را بارگذاری کن
-        val cm = CookieManager.getInstance()
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
-            cm.flush()
-            webView.postDelayed({
-                webView.loadUrl(url)
-            }, 120)
-        } else {
+
+        restoreCookies()
+
+        val url = targetUrlAfterUnlock()
+        // کمی صبر تا CookieManager.flush اعمال شود
+        mainHandler.postDelayed({
+            restoreCookies()
             webView.loadUrl(url)
-        }
+        }, 250)
+
         UpdateChecker.check(this, prefs.serverUrl)
         MessageNotifier.startPolling(this, prefs.serverUrl)
     }
@@ -196,7 +244,6 @@ class MainActivity : AppCompatActivity() {
         webView.visibility = View.GONE
         statusText.text = msg
     }
-
 
     private fun canUseBiometric(): Boolean {
         val bm = BiometricManager.from(this)
@@ -227,7 +274,6 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 override fun onAuthenticationFailed() {
-                    // بگذار کاربر دوباره تلاش کند
                 }
             }
         )
@@ -241,8 +287,6 @@ class MainActivity : AppCompatActivity() {
             .build()
         prompt.authenticate(info)
     }
-
-
 
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
@@ -259,8 +303,9 @@ class MainActivity : AppCompatActivity() {
     private fun setupWebView() {
         val cm = CookieManager.getInstance()
         cm.setAcceptCookie(true)
-        cm.setAcceptThirdPartyCookies(webView, true)
-        // حفظ نشست بعد از بستن اپ
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            cm.setAcceptThirdPartyCookies(webView, true)
+        }
         restoreCookies()
 
         val s = webView.settings
@@ -285,11 +330,6 @@ class MainActivity : AppCompatActivity() {
                 if (u.contains("/logout")) {
                     clearWebSession()
                 }
-                // لینک‌های داخلی صندوق در WebView بمانند
-                if (u.contains("130.185.75.146") || u.contains(prefs.serverUrl.removePrefix("http://").removePrefix("https://").substringBefore("/"))) {
-                    return false
-                }
-                // بقیه را در مرورگر باز نکن مگر لازم باشد
                 return false
             }
 
@@ -299,42 +339,55 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 progress.visibility = View.GONE
-                CookieManager.getInstance().flush()
                 try {
                     val u = url ?: ""
-                    // فقط بعد از خروج واقعی کوکی را پاک کن — نه با هر بار دیدن صفحه لاگین
-                    // (در غیر این صورت با یک ریدایرکت موقت همه نشست از بین می‌رود)
                     if (u.contains("/logout")) {
                         clearWebSession()
-                    } else if (u.isNotBlank() && !u.contains("/login")) {
-                        prefs.lastUrl = u
-                        val c = CookieManager.getInstance().getCookie(prefs.serverUrl)
-                            ?: CookieManager.getInstance().getCookie(prefs.serverUrl.trimEnd('/') + "/")
-                        if (!c.isNullOrBlank()) prefs.savedCookies = c
+                        return
                     }
-                } catch (_: Exception) {}
-                // تزریق نسخه اپ به همه صفحات وب
-                val js = """
-                    (function(){
-                      window.__FF_APP = {
-                        isAndroid: true,
-                        versionName: '${BuildConfig.VERSION_NAME}',
-                        versionCode: ${BuildConfig.VERSION_CODE}
-                      };
-                      window.FamilyFundApp = window.FamilyFundApp || {};
-                      try {
-                        document.dispatchEvent(new CustomEvent('ff-app-ready', {detail: window.__FF_APP}));
-                      } catch(e) {}
-                    })();
-                """.trimIndent()
-                view?.evaluateJavascript(js, null)
+                    // همیشه بعد از هر صفحه کوکی را ذخیره کن (به‌خصوص بعد از لاگین)
+                    persistSession(force = true)
+
+                    // اگر بعد از اثرانگشت به لاگین افتادیم ولی کوکی داشتیم، یک‌بار بازیابی کن
+                    if (unlocked && u.contains("/login") && hasSessionCookie() && !loginRecoveryTried) {
+                        loginRecoveryTried = true
+                        mainHandler.postDelayed({
+                            restoreCookies()
+                            webView.loadUrl("$baseUrl/dashboard")
+                        }, 300)
+                        return
+                    }
+                    // ورود موفق: پرچم بازیابی را ریست کن
+                    if (u.contains("/dashboard") || (!u.contains("/login") && u.contains("/fund"))) {
+                        loginRecoveryTried = false
+                    }
+
+                    // تزریق پل اندروید
+                    val js = """
+                        (function(){
+                          window.__FF_APP = {
+                            versionName: '${BuildConfig.VERSION_NAME}',
+                            versionCode: ${BuildConfig.VERSION_CODE},
+                            isNative: true
+                          };
+                          window.FamilyFundApp = window.FamilyFundApp || {};
+                          try {
+                            document.dispatchEvent(new CustomEvent('ff-app-ready', {detail: window.__FF_APP}));
+                          } catch(e) {}
+                        })();
+                    """.trimIndent()
+                    view?.evaluateJavascript(js, null)
+                } catch (_: Exception) {
+                }
             }
         }
         webView.webChromeClient = WebChromeClient()
 
-        // دانلود APK از داخل WebView (لینک‌های دانلود در صفحات وب)
         webView.setDownloadListener(DownloadListener { url, _, _, mimeType, _ ->
-            if (url.contains("download/android") || (mimeType != null && mimeType.contains("android.package")) || url.endsWith(".apk")) {
+            if (url.contains("download/android") ||
+                (mimeType != null && mimeType.contains("android.package")) ||
+                url.endsWith(".apk")
+            ) {
                 UpdateChecker.downloadAndInstall(this@MainActivity, url)
             } else {
                 try {
