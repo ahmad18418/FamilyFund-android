@@ -22,8 +22,9 @@ class MessageCheckWorker(
     override fun doWork(): Result {
         return try {
             val prefs = Prefs(applicationContext)
+            CookieHeader.refreshFromWebView(applicationContext)
             val base = prefs.serverUrl.trimEnd('/')
-            val cookie = prefs.savedCookies
+            val cookie = CookieHeader.from(applicationContext)
             if (cookie.isBlank()) return Result.success()
 
             val conn = (URL("$base/api/messages/unread").openConnection() as HttpURLConnection).apply {
@@ -70,11 +71,12 @@ class MessageCheckWorker(
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
             val notif = NotificationCompat.Builder(applicationContext, CHANNEL)
-                .setSmallIcon(R.mipmap.ic_launcher)
+                .setSmallIcon(android.R.drawable.ic_dialog_email)
                 .setContentTitle(title)
                 .setContentText(text)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(text))
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setDefaults(NotificationCompat.DEFAULT_ALL)
                 .setAutoCancel(true)
                 .setContentIntent(pi)
                 .build()

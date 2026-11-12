@@ -1,6 +1,7 @@
 package com.familyfund.app
 
 import android.app.Activity
+import android.app.ProgressDialog
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -67,151 +68,182 @@ object UpdateChecker {
         }
     }
 
-    fun fetchRemote(serverBase: String): RemoteInfo? {
-        val base = serverBase.trimEnd('/')
-        val body = httpGet("$base/api/app-version") ?: return null
-        val json = JSONObject(body)
-        val remoteCode = json.optInt("versionCode", 0)
-        if (remoteCode <= 0) return null
-        var apkUrl = json.optString("apkUrl", "")
-        if (apkUrl.isBlank() || !apkUrl.startsWith("http")) {
-            apkUrl = "$base/download/android"
-        }
-        return RemoteInfo(
-            versionCode = remoteCode,
-            versionName = json.optString("versionName", remoteCode.toString()),
-            notes = json.optString("notes", ""),
-            force = json.optBoolean("force", false),
-            apkUrl = apkUrl
+    fun fetchRemote(base: String): RemoteInfo? {
+        val urls = listOf(
+            "$base/api/app-version",
+            "$base/api/version"
         )
-    }
-
-    fun downloadAndInstall(activity: Activity, apkUrl: String) {
-        Toast.makeText(activity, "در حال دانلود نسخه جدید…", Toast.LENGTH_SHORT).show()
-        io.execute {
+        for (u in urls) {
             try {
-                val outFile = File(activity.cacheDir, "family-fund-update.apk")
-                if (outFile.exists()) outFile.delete()
-                downloadToFile(apkUrl, outFile)
-                if (!outFile.exists() || outFile.length() < 10_000) {
-                    throw IllegalStateException("فایل دانلود ناقص است")
+                val conn = (URL(u).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 10000
+                    readTimeout = 10000
+                    requestMethod = "GET"
+                    setRequestProperty("Accept", "application/json")
                 }
-                main.post { installApk(activity, outFile) }
-            } catch (e: Exception) {
-                main.post {
-                    Toast.makeText(activity, "خطا در دانلود: ${e.message}", Toast.LENGTH_LONG).show()
-                    try {
-                        activity.startActivity(
-                            Intent(Intent.ACTION_VIEW, Uri.parse(apkUrl))
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        )
-                    } catch (_: Exception) {
-                    }
+                if (conn.responseCode !in 200..299) {
+                    conn.disconnect()
+                    continue
                 }
+                val body = conn.inputStream.bufferedReader().readText()
+                conn.disconnect()
+                val j = JSONObject(body)
+                val code = j.optInt("versionCode", j.optInt("version_code", 0))
+                val name = j.optString("versionName", j.optString("version_name", ""))
+                val notes = j.optString("notes", j.optString("changelog", ""))
+                val force = j.optBoolean("force", false)
+                var apk = j.optString("apkUrl", j.optString("apk_url", ""))
+                if (apk.isBlank()) apk = "$base/static/apk/familyfund.apk"
+                if (!apk.startsWith("http")) {
+                    apk = base.trimEnd('/') + (if (apk.startsWith("/")) apk else "/$apk")
+                }
+                if (code > 0) {
+                    return RemoteInfo(code, name, notes, force, apk)
+                }
+            } catch (_: Exception) {
             }
         }
+        return null
     }
 
     private fun showDialog(activity: Activity, info: RemoteInfo) {
         val msg = buildString {
-            append("نسخه جدید ${info.versionName} (${info.versionCode}) آماده است.\n")
-            append("نسخه فعلی: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})\n")
-            if (info.notes.isNotBlank()) append("\n${info.notes}")
+            append("نسخه جدید ")
+            append(info.versionName.ifBlank { info.versionCode.toString() })
+            append(" آماده است.\n")
+            if (info.notes.isNotBlank()) {
+                append("\n")
+                append(info.notes)
+            }
         }
         val b = AlertDialog.Builder(activity)
-            .setTitle("بروزرسانی اپ")
+            .setTitle("بروزرسانی برنامه")
             .setMessage(msg)
             .setCancelable(!info.force)
             .setPositiveButton("دانلود و نصب") { _, _ ->
                 downloadAndInstall(activity, info.apkUrl)
             }
-            .setNeutralButton("لینک دانلود") { _, _ ->
-                try {
-                    activity.startActivity(
-                        Intent(Intent.ACTION_VIEW, Uri.parse(info.apkUrl))
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    )
-                } catch (_: Exception) {
-                }
-            }
-        if (!info.force) b.setNegativeButton("بعداً", null)
+        if (!info.force) {
+            b.setNegativeButton("بعداً", null)
+        }
         b.show()
     }
 
-    private fun httpGet(urlStr: String): String? {
-        val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
-            connectTimeout = 12000
-            readTimeout = 12000
-            requestMethod = "GET"
-            instanceFollowRedirects = true
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "FamilyFundApp/${BuildConfig.VERSION_NAME}")
-        }
-        return try {
-            val code = conn.responseCode
-            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-            stream?.bufferedReader()?.readText()
-        } finally {
-            conn.disconnect()
-        }
-    }
-
-    private fun downloadToFile(urlStr: String, outFile: File) {
-        var current = urlStr
-        var redirects = 0
-        while (redirects < 5) {
-            val conn = (URL(current).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 20000
-                readTimeout = 180000
-                instanceFollowRedirects = false
-                requestMethod = "GET"
-                setRequestProperty("User-Agent", "FamilyFundApp/${BuildConfig.VERSION_NAME}")
-            }
-            val code = conn.responseCode
-            if (code in 300..399) {
-                val loc = conn.getHeaderField("Location") ?: break
-                current = if (loc.startsWith("http")) loc else URL(URL(current), loc).toString()
-                conn.disconnect()
-                redirects++
-                continue
-            }
-            if (code !in 200..299) {
-                conn.disconnect()
-                throw IllegalStateException("HTTP $code")
-            }
-            conn.inputStream.use { input ->
-                FileOutputStream(outFile).use { output -> input.copyTo(output) }
-            }
-            conn.disconnect()
+    fun downloadAndInstall(activity: Activity, apkUrl: String) {
+        if (apkUrl.isBlank()) {
+            Toast.makeText(activity, "آدرس فایل یافت نشد", Toast.LENGTH_SHORT).show()
             return
         }
-        throw IllegalStateException("redirect loop")
-    }
+        // Progress dialog
+        @Suppress("DEPRECATION")
+        val dlg = ProgressDialog(activity).apply {
+            setTitle("دانلود نسخه جدید")
+            setMessage("در حال آماده‌سازی…")
+            setProgressStyle(ProgressDialog.STYLE_HORIZONTAL)
+            max = 100
+            progress = 0
+            setCancelable(false)
+            setCanceledOnTouchOutside(false)
+            show()
+        }
+        Toast.makeText(activity, "دانلود شروع شد…", Toast.LENGTH_SHORT).show()
 
-    fun installApk(activity: Activity, file: File) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            if (!activity.packageManager.canRequestPackageInstalls()) {
-                Toast.makeText(
-                    activity,
-                    "اجازه نصب از منابع ناشناخته را بدهید و دوباره تلاش کنید",
-                    Toast.LENGTH_LONG
-                ).show()
-                activity.startActivity(
-                    Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
-                        .setData(Uri.parse("package:${activity.packageName}"))
-                )
-                return
+        io.execute {
+            try {
+                val conn = (URL(apkUrl).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 20000
+                    readTimeout = 120000
+                    requestMethod = "GET"
+                    instanceFollowRedirects = true
+                }
+                val code = conn.responseCode
+                if (code !in 200..299) {
+                    conn.disconnect()
+                    main.post {
+                        dlg.dismiss()
+                        Toast.makeText(activity, "خطا در دانلود ($code)", Toast.LENGTH_LONG).show()
+                    }
+                    return@execute
+                }
+                val total = conn.contentLengthLong.coerceAtLeast(0)
+                val dir = File(activity.cacheDir, "apk").apply { mkdirs() }
+                val outFile = File(dir, "familyfund-update.apk")
+                if (outFile.exists()) outFile.delete()
+                conn.inputStream.use { input ->
+                    FileOutputStream(outFile).use { output ->
+                        val buf = ByteArray(64 * 1024)
+                        var readTotal = 0L
+                        var n: Int
+                        var lastPct = -1
+                        while (input.read(buf).also { n = it } >= 0) {
+                            output.write(buf, 0, n)
+                            readTotal += n
+                            val pct = if (total > 0) ((readTotal * 100) / total).toInt() else -1
+                            if (pct != lastPct) {
+                                lastPct = pct
+                                val rt = readTotal
+                                main.post {
+                                    if (pct >= 0) {
+                                        dlg.isIndeterminate = false
+                                        dlg.progress = pct
+                                        dlg.setMessage("در حال دانلود… $pct٪")
+                                    } else {
+                                        dlg.isIndeterminate = true
+                                        val mb = rt / (1024.0 * 1024.0)
+                                        dlg.setMessage(String.format("در حال دانلود… %.1f مگابایت", mb))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                conn.disconnect()
+                main.post {
+                    dlg.setMessage("دانلود تمام شد. در حال باز کردن نصب‌کننده…")
+                    dlg.progress = 100
+                }
+                Thread.sleep(400)
+                main.post {
+                    dlg.dismiss()
+                    installApk(activity, outFile)
+                }
+            } catch (e: Exception) {
+                main.post {
+                    try { dlg.dismiss() } catch (_: Exception) {}
+                    Toast.makeText(activity, "خطای دانلود: ${e.message}", Toast.LENGTH_LONG).show()
+                }
             }
         }
-        val uri = FileProvider.getUriForFile(
-            activity,
-            "${activity.packageName}.fileprovider",
-            file
-        )
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, "application/vnd.android.package-archive")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+
+    private fun installApk(activity: Activity, file: File) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (!activity.packageManager.canRequestPackageInstalls()) {
+                    Toast.makeText(
+                        activity,
+                        "اجازه نصب از منابع ناشناخته را بدهید",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                        data = Uri.parse("package:${activity.packageName}")
+                    }
+                    activity.startActivity(intent)
+                }
+            }
+            val uri = FileProvider.getUriForFile(
+                activity,
+                "${activity.packageName}.fileprovider",
+                file
+            )
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            activity.startActivity(intent)
+        } catch (e: Exception) {
+            Toast.makeText(activity, "خطا در نصب: ${e.message}", Toast.LENGTH_LONG).show()
         }
-        activity.startActivity(intent)
     }
 }

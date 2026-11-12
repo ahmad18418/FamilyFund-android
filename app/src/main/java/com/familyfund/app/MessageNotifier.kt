@@ -35,12 +35,19 @@ object MessageNotifier {
 
     fun ensureChannel(ctx: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val nm = ctx.getSystemService(NotificationManager::class.java)
+            // حذف کانال قدیمی و ساخت مجدد با اهمیت بالا
+            try { nm.deleteNotificationChannel(CHANNEL_ID) } catch (_: Exception) {}
             val ch = NotificationChannel(
                 CHANNEL_ID,
                 "پیام‌های صندوق",
                 NotificationManager.IMPORTANCE_HIGH
-            ).apply { description = "اعلان پیام‌های جدید صندوق خانواده" }
-            ctx.getSystemService(NotificationManager::class.java).createNotificationChannel(ch)
+            ).apply {
+                description = "اعلان پیام‌های جدید صندوق خانواده"
+                enableVibration(true)
+                setShowBadge(true)
+            }
+            nm.createNotificationChannel(ch)
         }
     }
 
@@ -56,7 +63,6 @@ object MessageNotifier {
         }
     }
 
-    /** بررسی پس‌زمینه حتی وقتی اپ بسته است (حداقل هر ۱۵ دقیقه — محدودیت اندروید) */
     fun scheduleBackground(ctx: Context) {
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
@@ -75,7 +81,12 @@ object MessageNotifier {
         ensureChannel(activity)
         requestPermissionIfNeeded(activity)
         scheduleBackground(activity.applicationContext)
-        // heartbeat حضور
+        // ذخیره کوکی فعلی از WebView
+        try {
+            (activity as? MainActivity)?.let { }
+            CookieHeader.refreshFromWebView(activity)
+        } catch (_: Exception) {}
+
         io.execute {
             try {
                 val base = serverBase.trimEnd('/')
@@ -83,7 +94,7 @@ object MessageNotifier {
                 val conn = (URL("$base/api/heartbeat").openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"
                     connectTimeout = 8000
-                    setRequestProperty("Cookie", cookie)
+                    if (cookie.isNotBlank()) setRequestProperty("Cookie", cookie)
                 }
                 conn.responseCode
                 conn.disconnect()
@@ -93,49 +104,55 @@ object MessageNotifier {
         scheduled = true
         val runnable = object : Runnable {
             override fun run() {
+                CookieHeader.refreshFromWebView(activity)
                 poll(activity, serverBase)
-                main.postDelayed(this, 45_000L)
+                main.postDelayed(this, 30_000L)
             }
         }
-        main.postDelayed(runnable, 8_000L)
+        main.postDelayed(runnable, 5_000L)
     }
 
     private fun poll(activity: MainActivity, serverBase: String) {
         io.execute {
             try {
                 val base = serverBase.trimEnd('/')
+                val cookie = CookieHeader.from(activity)
+                if (cookie.isBlank()) return@execute
                 val conn = (URL("$base/api/messages/unread").openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 8000
-                    readTimeout = 8000
+                    connectTimeout = 10000
+                    readTimeout = 10000
                     requestMethod = "GET"
-                    val cookie = CookieHeader.from(activity)
-                    if (cookie.isNotBlank()) setRequestProperty("Cookie", cookie)
+                    setRequestProperty("Cookie", cookie)
                     setRequestProperty("Accept", "application/json")
+                    setRequestProperty("User-Agent", "FamilyFundApp/${BuildConfig.VERSION_NAME}")
                 }
-                if (conn.responseCode !in 200..299) {
-                    conn.disconnect(); return@execute
+                val code = conn.responseCode
+                if (code !in 200..299) {
+                    conn.disconnect()
+                    return@execute
                 }
                 val body = conn.inputStream.bufferedReader().readText()
                 conn.disconnect()
                 val json = JSONObject(body)
                 val count = json.optInt("count", 0)
                 if (count <= 0) return@execute
-                val arr = json.optJSONArray("messages") ?: return@execute
-                val prefs = activity.getSharedPreferences(PREF, Context.MODE_PRIVATE)
-                val seen = prefs.getStringSet("seen_ids", emptySet())?.toMutableSet() ?: mutableSetOf()
+
+                val arr = json.optJSONArray("messages")
+                val sp = activity.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+                val lastNotifiedId = sp.getInt("last_notif_id", 0)
                 var newestId = 0
                 var title = "پیام جدید صندوق"
                 var text = "$count پیام خوانده‌نشده"
-                if (arr.length() > 0) {
+                if (arr != null && arr.length() > 0) {
                     val first = arr.getJSONObject(0)
                     newestId = first.optInt("id", 0)
-                    title = first.optString("title", title)
-                    text = first.optString("body", text)
+                    title = first.optString("title", title).ifBlank { title }
+                    text = first.optString("body", text).ifBlank { text }
                 }
-                if (newestId > 0 && seen.contains(newestId.toString())) return@execute
+                // فقط اگر پیام جدیدتر از آخرین نوتیف باشد
+                if (newestId > 0 && newestId <= lastNotifiedId) return@execute
                 if (newestId > 0) {
-                    seen.add(newestId.toString())
-                    prefs.edit().putStringSet("seen_ids", seen.toList().takeLast(50).toSet()).apply()
+                    sp.edit().putInt("last_notif_id", newestId).apply()
                 }
                 main.post { showNotification(activity, title, text, base) }
             } catch (_: Exception) {
@@ -154,11 +171,12 @@ object MessageNotifier {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val notif = NotificationCompat.Builder(ctx, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(android.R.drawable.ic_dialog_email)
             .setContentTitle(title)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
             .setAutoCancel(true)
             .setContentIntent(pi)
             .build()
@@ -167,7 +185,7 @@ object MessageNotifier {
                 ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS)
                 == PackageManager.PERMISSION_GRANTED
             ) {
-                NotificationManagerCompat.from(ctx).notify(9001, notif)
+                NotificationManagerCompat.from(ctx).notify(9001 + (System.currentTimeMillis() % 100).toInt(), notif)
             }
         } catch (_: Exception) {
         }
@@ -178,9 +196,40 @@ object CookieHeader {
     fun from(ctx: Context): String {
         val prefs = Prefs(ctx)
         if (prefs.savedCookies.isNotBlank()) return prefs.savedCookies
+        return collectFromManager(prefs.serverUrl)
+    }
+
+    fun refreshFromWebView(ctx: Context) {
+        try {
+            val prefs = Prefs(ctx)
+            val collected = collectFromManager(prefs.serverUrl)
+            if (collected.isNotBlank()) {
+                // merge
+                val set = linkedSetOf<String>()
+                prefs.savedCookies.split(";").map { it.trim() }.filter { it.contains("=") }.forEach { set.add(it) }
+                collected.split(";").map { it.trim() }.filter { it.contains("=") }.forEach { set.add(it) }
+                if (set.isNotEmpty()) prefs.savedCookies = set.joinToString("; ")
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun collectFromManager(serverBase: String): String {
         return try {
-            val base = prefs.serverUrl
-            android.webkit.CookieManager.getInstance().getCookie(base) ?: ""
+            val cm = android.webkit.CookieManager.getInstance()
+            val base = serverBase.trimEnd('/')
+            val host = try {
+                val u = android.net.Uri.parse(if (base.contains("://")) base else "http://$base")
+                "${u.scheme}://${u.host}"
+            } catch (_: Exception) { base }
+            val parts = linkedSetOf<String>()
+            for (url in listOf(base, "$base/", host, "$host/", "$host/fund", "$host/fund/")) {
+                val c = cm.getCookie(url)
+                if (!c.isNullOrBlank()) {
+                    c.split(";").map { it.trim() }.filter { it.contains("=") }.forEach { parts.add(it) }
+                }
+            }
+            parts.joinToString("; ")
         } catch (_: Exception) {
             ""
         }
