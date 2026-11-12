@@ -1,6 +1,7 @@
 package com.familyfund.app
 
 import android.annotation.SuppressLint
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Build
@@ -11,6 +12,7 @@ import android.view.View
 import android.webkit.CookieManager
 import android.webkit.DownloadListener
 import android.webkit.JavascriptInterface
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
@@ -19,6 +21,8 @@ import android.webkit.WebViewClient
 import android.net.Uri
 import android.widget.ProgressBar
 import android.widget.TextView
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
@@ -37,6 +41,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var progress: ProgressBar
     private lateinit var statusText: TextView
     private var unlocked = false
+    private var filePathCallback: ValueCallback<Array<Uri>>? = null
+    private val fileChooserLauncher: ActivityResultLauncher<Intent> =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val cb = filePathCallback
+            filePathCallback = null
+            if (cb == null) return@registerForActivityResult
+            val uris = WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data)
+            cb.onReceiveValue(uris)
+        }
     private var loginRecoveryTried = false
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -319,6 +332,8 @@ class MainActivity : AppCompatActivity() {
         val s = webView.settings
         s.javaScriptEnabled = true
         s.domStorageEnabled = true
+        s.allowFileAccess = true
+        s.allowContentAccess = true
         s.databaseEnabled = true
         s.loadWithOverviewMode = true
         s.useWideViewPort = true
@@ -397,7 +412,57 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
-        webView.webChromeClient = WebChromeClient()
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: ValueCallback<Array<Uri>>?,
+                fileChooserParams: FileChooserParams?
+            ): Boolean {
+                // لغو انتخاب قبلی
+                this@MainActivity.filePathCallback?.onReceiveValue(null)
+                this@MainActivity.filePathCallback = filePathCallback
+                val intent = try {
+                    fileChooserParams?.createIntent() ?: Intent(Intent.ACTION_GET_CONTENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "image/*"
+                    }
+                } catch (e: Exception) {
+                    Intent(Intent.ACTION_GET_CONTENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "image/*"
+                    }
+                }
+                // ترجیح تصویر
+                if (intent.type.isNullOrBlank() || intent.type == "*/*") {
+                    intent.type = "image/*"
+                }
+                intent.putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "image/jpeg", "image/png", "image/webp"))
+                try {
+                    fileChooserLauncher.launch(
+                        Intent.createChooser(intent, "انتخاب تصویر فیش")
+                    )
+                } catch (e: ActivityNotFoundException) {
+                    this@MainActivity.filePathCallback = null
+                    filePathCallback?.onReceiveValue(null)
+                    android.widget.Toast.makeText(
+                        this@MainActivity,
+                        "برنامه‌ای برای انتخاب تصویر یافت نشد",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                    return false
+                } catch (e: Exception) {
+                    this@MainActivity.filePathCallback = null
+                    filePathCallback?.onReceiveValue(null)
+                    android.widget.Toast.makeText(
+                        this@MainActivity,
+                        "خطا در باز کردن انتخاب فایل: ${e.message}",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                    return false
+                }
+                return true
+            }
+        }
 
         webView.setDownloadListener(DownloadListener { url, _, _, mimeType, _ ->
             if (url.contains("download/android") ||
