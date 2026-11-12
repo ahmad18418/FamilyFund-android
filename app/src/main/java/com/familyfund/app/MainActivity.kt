@@ -92,6 +92,13 @@ class MainActivity : AppCompatActivity() {
     override fun onStop() {
         super.onStop()
         persistSession(force = true)
+        // خروج از اپ ≠ خروج از حساب: نوتیف پس‌زمینه را نگه دار
+        try {
+            if (prefs.savedCookies.isNotBlank() || prefs.hasCredentials()) {
+                MessageNotifier.scheduleBackground(applicationContext)
+                MessageNotifier.scheduleImmediate(applicationContext)
+            }
+        } catch (_: Exception) {}
     }
 
     private fun cookieTargetUrls(): List<String> {

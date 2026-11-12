@@ -63,6 +63,20 @@ object MessageNotifier {
         }
     }
 
+    fun scheduleImmediate(ctx: Context) {
+        try {
+            CookieHeader.refreshFromWebView(ctx)
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build()
+            val req = androidx.work.OneTimeWorkRequestBuilder<MessageCheckWorker>()
+                .setConstraints(constraints)
+                .addTag("msg_immediate")
+                .build()
+            WorkManager.getInstance(ctx).enqueue(req)
+        } catch (_: Exception) {}
+    }
+
     fun scheduleBackground(ctx: Context) {
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
@@ -72,7 +86,7 @@ object MessageNotifier {
             .build()
         WorkManager.getInstance(ctx).enqueueUniquePeriodicWork(
             MessageCheckWorker.UNIQUE,
-            ExistingPeriodicWorkPolicy.UPDATE,
+            ExistingPeriodicWorkPolicy.KEEP,
             req
         )
     }
