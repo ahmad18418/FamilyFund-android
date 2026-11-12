@@ -14,7 +14,6 @@ class Prefs(context: Context) {
             ?: BuildConfig.DEFAULT_SERVER_URL
         set(value) = sp.edit().putString(KEY_URL, value.trim().trimEnd('/')).apply()
 
-    /** پیش‌فرض روشن: ورود بیومتریک فقط قفل اپ را باز می‌کند */
     var biometricEnabled: Boolean
         get() = sp.getBoolean(KEY_BIO, true)
         set(value) = sp.edit().putBoolean(KEY_BIO, value).apply()
@@ -27,10 +26,28 @@ class Prefs(context: Context) {
         get() = sp.getString(KEY_COOKIES, "") ?: ""
         set(value) = sp.edit().putString(KEY_COOKIES, value).apply()
 
+    /** برای ورود خودکار بعد از اثرانگشت وقتی کوکی از بین رفته */
+    var savedUserCode: String
+        get() = sp.getString(KEY_USER, "") ?: ""
+        set(value) = sp.edit().putString(KEY_USER, value).apply()
+
+    var savedPassword: String
+        get() = sp.getString(KEY_PASS, "") ?: ""
+        set(value) = sp.edit().putString(KEY_PASS, value).apply()
+
+    fun clearCredentials() {
+        sp.edit().remove(KEY_USER).remove(KEY_PASS).apply()
+    }
+
+    fun hasCredentials(): Boolean =
+        savedUserCode.isNotBlank() && savedPassword.isNotBlank()
+
     companion object {
         private const val KEY_URL = "server_url"
         private const val KEY_BIO = "biometric_enabled"
         private const val KEY_LAST_URL = "last_url"
         private const val KEY_COOKIES = "saved_cookies"
+        private const val KEY_USER = "saved_user_code"
+        private const val KEY_PASS = "saved_password"
     }
 }

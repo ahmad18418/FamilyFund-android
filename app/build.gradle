@@ -9,8 +9,8 @@ android {
         applicationId "com.familyfund.app"
         minSdk 24
         targetSdk 34
-        versionCode 20
-        versionName "1.6.11"
+        versionCode 21
+        versionName "1.6.12"
         buildConfigField "String", "DEFAULT_SERVER_URL", "\"http://130.185.75.146/fund\""
     }
 

@@ -172,6 +172,7 @@ class MainActivity : AppCompatActivity() {
             }
             prefs.savedCookies = ""
             prefs.lastUrl = ""
+            prefs.clearCredentials()
             loginRecoveryTried = false
         } catch (_: Exception) {
         }
@@ -348,14 +349,22 @@ class MainActivity : AppCompatActivity() {
                     // همیشه بعد از هر صفحه کوکی را ذخیره کن (به‌خصوص بعد از لاگین)
                     persistSession(force = true)
 
-                    // اگر بعد از اثرانگشت به لاگین افتادیم ولی کوکی داشتیم، یک‌بار بازیابی کن
-                    if (unlocked && u.contains("/login") && hasSessionCookie() && !loginRecoveryTried) {
+                    // اگر بعد از اثرانگشت به لاگین افتادیم: اول کوکی، بعد ورود خودکار با مشخصات ذخیره‌شده
+                    if (unlocked && u.contains("/login") && !loginRecoveryTried) {
                         loginRecoveryTried = true
                         mainHandler.postDelayed({
-                            restoreCookies()
-                            webView.loadUrl("$baseUrl/dashboard")
-                        }, 300)
+                            if (hasSessionCookie()) {
+                                restoreCookies()
+                                webView.loadUrl("$baseUrl/dashboard")
+                            } else if (prefs.hasCredentials()) {
+                                autoSubmitLogin()
+                            }
+                        }, 400)
                         return
+                    }
+                    // روی صفحه لاگین: ذخیره مشخصات هنگام ارسال فرم + تبدیل ارقام فارسی
+                    if (u.contains("/login")) {
+                        injectLoginHelpers()
                     }
                     // ورود موفق: پرچم بازیابی را ریست کن
                     if (u.contains("/dashboard") || (!u.contains("/login") && u.contains("/fund"))) {
@@ -398,7 +407,74 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
+
+    private fun injectLoginHelpers() {
+        val js = """
+            (function(){
+              function toEn(s){
+                if(!s) return s;
+                var p='۰۱۲۳۴۵۶۷۸۹';
+                var a='٠١٢٣٤٥٦٧٨٩';
+                var out='';
+                for(var i=0;i<s.length;i++){
+                  var c=s.charAt(i);
+                  var j=p.indexOf(c);
+                  if(j>=0){ out+=String(j); continue; }
+                  j=a.indexOf(c);
+                  if(j>=0){ out+=String(j); continue; }
+                  out+=c;
+                }
+                return out;
+              }
+              var form=document.querySelector('form');
+              if(!form || form.__ffBound) return;
+              form.__ffBound=true;
+              form.addEventListener('submit', function(){
+                try{
+                  var codeEl=form.querySelector('[name=membership_number]');
+                  var passEl=form.querySelector('[name=password]');
+                  if(codeEl){ codeEl.value=toEn(codeEl.value); }
+                  if(passEl){ passEl.value=toEn(passEl.value); }
+                  if(window.FamilyFundApp && FamilyFundApp.saveCredentials){
+                    FamilyFundApp.saveCredentials(codeEl?codeEl.value:'', passEl?passEl.value:'');
+                  }
+                }catch(e){}
+              });
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(js, null)
+    }
+
+    private fun autoSubmitLogin() {
+        val code = prefs.savedUserCode.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "")
+        val pass = prefs.savedPassword.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "")
+        if (code.isBlank() || pass.isBlank()) return
+        val js = """
+            (function(){
+              var form=document.querySelector('form');
+              if(!form) return;
+              var codeEl=form.querySelector('[name=membership_number]');
+              var passEl=form.querySelector('[name=password]');
+              if(!codeEl||!passEl) return;
+              codeEl.value='$code';
+              passEl.value='$pass';
+              form.submit();
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(js, null)
+    }
+
     inner class AppBridge {
+        @JavascriptInterface
+        fun saveCredentials(code: String?, password: String?) {
+            val c = (code ?: "").trim()
+            val p = password ?: ""
+            if (c.isNotBlank() && p.isNotBlank()) {
+                prefs.savedUserCode = c
+                prefs.savedPassword = p
+            }
+        }
+
         @JavascriptInterface
         fun getVersionName(): String = BuildConfig.VERSION_NAME
 
