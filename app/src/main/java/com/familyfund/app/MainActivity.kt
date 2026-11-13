@@ -108,6 +108,7 @@ class MainActivity : AppCompatActivity() {
         // خروج از اپ ≠ خروج از حساب: نوتیف پس‌زمینه را نگه دار
         try {
             if (prefs.savedCookies.isNotBlank() || prefs.hasCredentials()) {
+                MessageNotifier.requestPermission(this)
                 MessageNotifier.scheduleBackground(applicationContext)
                 MessageNotifier.scheduleImmediate(applicationContext)
             }
@@ -361,6 +362,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
+                persistSessionCookies()
                 progress.visibility = View.GONE
                 try {
                     val u = url ?: ""
@@ -576,4 +578,20 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
+
+    private fun persistSessionCookies() {
+        try {
+            val cm = android.webkit.CookieManager.getInstance()
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
+                cm.flush()
+            }
+            val cookie = CookieHeader.from(this)
+            if (cookie.isNotBlank()) {
+                prefs.savedCookies = cookie
+            }
+            MessageNotifier.scheduleBackground(applicationContext)
+        } catch (_: Exception) {
+        }
+    }
+
 }
